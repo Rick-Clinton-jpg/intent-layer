@@ -97,20 +97,29 @@ not a claim about false-positive behavior at scale (see Limitations).
 ## Known Limitations
 
 - **Embedding backend fell back to offline hashing, not the real
-  sentence-transformer.** The build spec calls for
-  `sentence-transformers` / `all-MiniLM-L6-v2`. This sandboxed build
-  environment's network egress policy blocks `huggingface.co` (confirmed
-  via a 403 from the egress proxy), so the model weights could not be
-  downloaded. `intent_layer/extractor.py` tries the real model first and
-  falls back automatically to a deterministic scikit-learn
+  sentence-transformer — confirmed on a second machine, not just
+  assumed.** The build spec calls for `sentence-transformers` /
+  `all-MiniLM-L6-v2`. `intent_layer/extractor.py` tries the real model
+  first and falls back automatically to a deterministic scikit-learn
   `HashingVectorizer` embedding (word 1-2-grams) if that fails, printing a
-  clear warning either way — the eval above ran on the fallback backend.
-  The fallback is lexical, not semantic, which is *why* the graph-linking
+  clear warning either way. This was re-tested on a second machine
+  specifically to check whether the original block was just that one
+  sandbox: `sentence-transformers` was installed fresh (it had not been
+  present before) and the extractor was allowed to attempt the real
+  download with no fallback forced. The download still failed — this
+  time with an explicit `403 Forbidden` policy denial from that
+  environment's egress proxy on `huggingface.co:443` (not a generic
+  timeout or DNS failure), confirmed via the proxy's own status endpoint
+  as a deliberate policy block rather than an outage. So the eval below
+  ran on the fallback backend again, and — since the fallback is
+  deterministic — produced numbers identical to the original run. The
+  fallback is lexical, not semantic, which is *why* the graph-linking
   logic also uses explicit reformulation/back-reference language as a
   second linking signal rather than relying on embedding similarity
-  alone. Swapping in the real model requires no code changes, just
-  network access to Hugging Face — `extractor.embedding_backend()`
-  reports which backend actually ran.
+  alone. Swapping in the real model requires no code changes, just an
+  environment whose egress policy actually permits `huggingface.co` —
+  `extractor.embedding_backend()` reports which backend actually ran, so
+  this is easy to re-check from any new environment.
 - **Intent extraction confidence is itself model/embedding-derived and
   imperfect.** It's a heuristic (keyword match, or cosine similarity to a
   small set of hand-picked category centroids), not a calibrated
