@@ -6,24 +6,46 @@ from embedding similarity to a known category's canonical description,
 never treated as ground truth -- a low similarity means low confidence,
 not "no match at all".
 
-Embedding backend: this module tries sentence-transformers
-(all-MiniLM-L6-v2) first, as specified in the build spec. If the model
-weights cannot be downloaded (e.g. huggingface.co is unreachable under
-this environment's network policy), it falls back automatically to a
-deterministic, fully-offline scikit-learn HashingVectorizer embedding so
-the prototype still runs with no API keys and no network dependency. See
-README.md "Known Limitations" for what this trade-off costs in practice.
+Embedding backend: three tiers, tried in order, each falling through to
+the next on failure:
+
+1. sentence-transformers (all-MiniLM-L6-v2), as specified in the build
+   spec -- usually unreachable in a locked-down environment since it
+   requires downloading weights from huggingface.co.
+2. A local OpenAI-compatible embedding endpoint (LM Studio/Bionic on
+   localhost:1234), if one is running with an embedding model loaded --
+   AND ONLY if INTENT_LAYER_EXPERIMENTAL_LOCAL_EMBEDDING=1 is set.
+   This stays offline in the sense that matters here -- no internet
+   egress, no API key -- but it IS a network call to another local
+   process, which is a real dependency the fully-offline tier below
+   doesn't have. It is opt-in, not auto-detected, because
+   eval/calibrate_thresholds.py found that REENTRY_SIM_THRESHOLD has no
+   value that separates genuine re-entries from unrelated topic pairs
+   under this embedding model -- see README.md "Known Limitations".
+   Without the env var, this tier is skipped entirely.
+3. A deterministic, fully-offline scikit-learn HashingVectorizer
+   embedding, so the prototype always runs even with nothing else
+   available.
+
+See README.md "Known Limitations" for what each tier costs in practice.
 """
 
+import json
+import os
 import re
 import sys
+import urllib.error
+import urllib.request
 import warnings
 from functools import lru_cache
 
 import numpy as np
 
 MODEL_NAME = "all-MiniLM-L6-v2"
-_EMBEDDING_BACKEND = None  # set on first use: "sentence-transformers" | "hashing-fallback"
+LOCAL_EMBEDDING_URL = "http://localhost:1234/v1/embeddings"
+LOCAL_EMBEDDING_MODELS_URL = "http://localhost:1234/v1/models"
+LOCAL_EMBEDDING_MODEL = "text-embedding-nomic-embed-text-v1.5"
+_EMBEDDING_BACKEND = None  # set on first use: "sentence-transformers" | "local-lm-studio" | "hashing-fallback"
 
 # Known domains: label -> (keywords for direct match, canonical phrase for
 # centroid embedding). Restricted_* correspond to the abstracted
@@ -80,21 +102,69 @@ def _get_model():
         model = SentenceTransformer(MODEL_NAME)
         _EMBEDDING_BACKEND = "sentence-transformers"
         return model
-    except Exception as exc:  # noqa: BLE001 - any failure means "use fallback"
-        _EMBEDDING_BACKEND = "hashing-fallback"
-        warnings.warn(
-            f"sentence-transformers/{MODEL_NAME} unavailable ({exc.__class__.__name__}: {exc}); "
-            "falling back to an offline HashingVectorizer embedding. "
-            "See README.md 'Known Limitations'.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+    except Exception as exc:  # noqa: BLE001 - any failure means "try the next tier"
         print(
-            f"[intent_layer] WARNING: {MODEL_NAME} could not be loaded "
-            f"({exc.__class__.__name__}); using offline hashing-vector fallback embeddings instead.",
+            f"[intent_layer] {MODEL_NAME} unavailable ({exc.__class__.__name__}); "
+            "trying a local LM Studio embedding endpoint next.",
+            file=sys.stderr,
+        )
+
+    if os.environ.get("INTENT_LAYER_EXPERIMENTAL_LOCAL_EMBEDDING") == "1" and _local_embedding_available():
+        _EMBEDDING_BACKEND = "local-lm-studio"
+        print(
+            f"[intent_layer] EXPERIMENTAL: using local embedding endpoint at "
+            f"{LOCAL_EMBEDDING_URL} ({LOCAL_EMBEDDING_MODEL}). Calibration in "
+            "eval/calibrate_thresholds.py found no threshold that separates "
+            "genuine re-entries from unrelated pairs under this embedding model -- "
+            "see README.md 'Known Limitations'. Not the default backend.",
             file=sys.stderr,
         )
         return None
+
+    _EMBEDDING_BACKEND = "hashing-fallback"
+    warnings.warn(
+        "No real embedding backend available (sentence-transformers and the local "
+        "LM Studio endpoint both unreachable); falling back to an offline "
+        "HashingVectorizer embedding. See README.md 'Known Limitations'.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
+    print(
+        "[intent_layer] WARNING: no embedding backend reachable; "
+        "using offline hashing-vector fallback embeddings instead.",
+        file=sys.stderr,
+    )
+    return None
+
+
+def _local_embedding_available() -> bool:
+    try:
+        req = urllib.request.Request(LOCAL_EMBEDDING_MODELS_URL, method="GET")
+        with urllib.request.urlopen(req, timeout=2) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        return any(m.get("id") == LOCAL_EMBEDDING_MODEL for m in body.get("data", []))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError):
+        return False
+
+
+def _local_embed(text: str) -> np.ndarray:
+    payload = {"model": LOCAL_EMBEDDING_MODEL, "input": [text]}
+    req = urllib.request.Request(
+        LOCAL_EMBEDDING_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        return np.array(body["data"][0]["embedding"], dtype=np.float32)
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, KeyError, OSError) as exc:
+        raise RuntimeError(
+            f"Local embedding backend was available at startup but failed mid-run: {exc}. "
+            "Not silently falling back mid-conversation -- that would mix embedding "
+            "spaces within one graph. Restart once LM Studio/Bionic is stable again."
+        ) from exc
 
 
 @lru_cache(maxsize=1)
@@ -127,8 +197,10 @@ def _domain_centroids():
 
 def embed(text: str) -> np.ndarray:
     model = _get_model()
-    if model is not None:
+    if _EMBEDDING_BACKEND == "sentence-transformers":
         return model.encode([text], normalize_embeddings=True)[0]
+    if _EMBEDDING_BACKEND == "local-lm-studio":
+        return _local_embed(text)
     vec = _hashing_vectorizer().transform([text]).toarray()[0]
     return vec.astype(np.float32)
 

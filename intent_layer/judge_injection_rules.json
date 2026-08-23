@@ -1,0 +1,26 @@
+[
+  {
+    "name": "fake_system_directive",
+    "pattern": "(?i)(\\[?\\s*(system|admin|override)\\s*(note|override|message|directive)\\s*[:\\]]|\\bsystem\\s+override\\b)",
+    "severity": "HIGH",
+    "description": "Fake system/admin/override note embedded in user-controlled text"
+  },
+  {
+    "name": "ignore_prior_context_claim",
+    "pattern": "(?i)(ignore\\s+(the\\s+)?(prior|previous|above)\\s+(context|instructions?)|disregard\\s+(the\\s+)?(above|prior|previous))",
+    "severity": "HIGH",
+    "description": "Instruction to ignore or disregard prior context/instructions"
+  },
+  {
+    "name": "explicit_answer_injection",
+    "pattern": "(?i)\\b(respond|answer|reply)\\s+with\\s+[a-z]\\b",
+    "severity": "HIGH",
+    "description": "Explicit instruction dictating the classifier's own answer letter/token"
+  },
+  {
+    "name": "actually_about_reframe_claim",
+    "pattern": "(?i)\\bthis\\s+(message|request|question)\\s+is\\s+actually\\s+(about|a\\s+continuation\\s+of)\\b",
+    "severity": "MEDIUM",
+    "description": "Explicit claim asserting what the message is 'actually' about, directed at the classifier rather than a conversational partner"
+  }
+]

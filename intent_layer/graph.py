@@ -50,6 +50,7 @@ class IntentNode:
     lineage_root: str
     is_reformulation_cue: bool = False
     is_backreference_cue: bool = False
+    resolved_via_global_backref: bool = False
 
 
 @dataclass
@@ -165,6 +166,7 @@ class IntentGraph:
             lineage_root=lineage_root,
             is_reformulation_cue=features["is_reformulation_cue"],
             is_backreference_cue=features["is_backreference_cue"],
+            resolved_via_global_backref=(parent is backref_target and backref_target is not None),
         )
         self.nodes.append(node)
         if parent is not None:
