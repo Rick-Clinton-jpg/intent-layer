@@ -154,3 +154,9 @@ not a claim about false-positive behavior at scale (see Limitations).
 
 Early prototype built for AI Alignment Foundation Fellowship application,
 August 2026.
+
+## License
+Licensed under PolyForm Noncommercial 1.0.0 — free to use, including
+personal and research use. Commercial use requires a separate license.
+See [LICENSE](./LICENSE) for full terms, or reach out to discuss
+commercial licensing.
